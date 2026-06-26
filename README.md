@@ -1,1 +1,1 @@
-# SOAR-Lite-Phishing-Response-Modle
+# SOAR-Lite-Phishing-Response
