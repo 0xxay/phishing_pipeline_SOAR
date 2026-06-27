@@ -48,7 +48,7 @@ The pipeline processes phishing emails through five stages:
 ### 1. Clone and Install
 
 ```bash
-git clone <repo>
+git clone https://github.com/0xxay/phishing_pipeline_SOAR.git
 cd phishing_pipeline_SOAR
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
