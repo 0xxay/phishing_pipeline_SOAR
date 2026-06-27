@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import os; files = [f for f in os.walk\\('.'\\)] ; print\\(f'Directories: {len\\(files\\)}'\\); total_lines = 0; import glob; python_files = glob.glob\\('**/*.py', recursive=True\\); [total_lines := total_lines + len\\(open\\(f\\).readlines\\(\\)\\) for f in python_files]; print\\(f'Total Python lines: {total_lines}'\\)\")",
+      "Bash(tasklist)",
+      "Bash(timeout 120 npx -y skills@latest add mukul975/Anthropic-Cybersecurity-Skills --list)",
+      "Bash(echo \"[exit=$?]\")",
+      "Bash(npx -y skills@latest add mukul975/Anthropic-Cybersecurity-Skills --skill '*' --agent '*' -y --copy --global)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'skills' } | Select-Object ProcessId, @{n='CL';e={$_.CommandLine.Substring\\(0,[Math]::Min\\(120,$_.CommandLine.Length\\)\\)}} | Format-List)",
+      "PowerShell(Stop-Process -Id 29360 -Force -ErrorAction SilentlyContinue; Stop-Process -Id 14692 -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; $still = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'skills' }; if \\($still\\) { \"STILL RUNNING: $\\($still.ProcessId\\)\" } else { \"stopped\" })",
+      "Bash([ -d \"$d\" ])",
+      "Read(//c/Users/Skyworth/.claude/skills/**)",
+      "Bash(python3 -)",
+      "Bash(python -)",
+      "Bash(bash audit_sqli.sh)",
+      "PowerShell(Get-Process python -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq \"\"} | Stop-Process -Force; Start-Sleep -Seconds 1; Write-Host \"Old server stopped\")",
+      "Bash(python -m py_compile ui/app.py)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from ui.app import app; print\\('✓ App imports successful'\\)\")",
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "PowerShell(Get-Process python -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "Bash(npm install *)",
+      "Bash(node -e \"console.log\\(require\\('docx/package.json'\\).version\\)\")",
+      "Bash(echo \"docx installed: $\\(node -e \"console.log\\(require\\('docx/package.json'\\).version\\)\"\\)\")",
+      "Bash(pip install *)",
+      "Bash(python __TRACKED_VAR__/scripts/office/validate.py docs/BridgeIT-XSS-Assessment-Report.docx)",
+      "Bash(python -c \"import zipfile; z=zipfile.ZipFile\\('docs/BridgeIT-XSS-Assessment-Report.docx'\\); print\\('bad:',z.testzip\\(\\)\\); print\\([n for n in z.namelist\\(\\)][:8]\\)\")",
+      "Bash(pandoc docs/BridgeIT-XSS-Assessment-Report.docx -t plain)",
+      "Bash(node gen_sqli_report.js)"
+    ]
+  }
+}

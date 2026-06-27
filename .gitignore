@@ -1,0 +1,16 @@
+.env
+token.pickle
+credentials.json
+client_secret_*.json
+cases.json
+block_list.json
+escalation_log.jsonl
+false_positive_log.jsonl
+phishing_pipeline.log
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
