@@ -542,6 +542,8 @@ async def gmail_polling_loop():
                         cases_store.append(case_dict)
                         save_cases()
                         emails_processed_count += 1
+                        # Push new case to all connected UI clients immediately
+                        await broadcast_log(f"[NEW_CASE]{json.dumps(case_dict)}")
                     except Exception as e:
                         await broadcast_log(f"[ERROR] Failed to process email: {str(e)}")
             else:
@@ -681,13 +683,17 @@ async def upload_credentials(file: UploadFile = File(...)):
 
 @app.post("/api/gmail/authenticate")
 async def authenticate_gmail():
-    """Trigger Gmail OAuth flow."""
+    """Trigger Gmail OAuth flow — runs in thread so it doesn't block the event loop."""
     try:
-        await broadcast_log("[INFO] Starting Gmail OAuth flow...")
-        setup_gmail_oauth()
-        await broadcast_log("[SUCCESS] Browser opened for authentication - complete login in your browser")
+        await broadcast_log("[INFO] Starting Gmail OAuth — browser window will open, complete login there...")
+
+        def _run_oauth():
+            setup_gmail_oauth()
+
+        await asyncio.to_thread(_run_oauth)
+        await broadcast_log("[SUCCESS] Gmail authenticated! Token saved. You can now start polling.")
         return JSONResponse(
-            content={"success": True, "message": "Browser opened for authentication"}
+            content={"success": True, "message": "Gmail authenticated successfully"}
         )
     except Exception as e:
         await broadcast_log(f"[ERROR] Gmail authentication failed: {str(e)}")
@@ -778,6 +784,7 @@ async def poll_gmail_now():
                         case_dict = case_to_dict(case)
                         cases_store.append(case_dict)
                         save_cases()
+                        await broadcast_log(f"[NEW_CASE]{json.dumps(case_dict)}")
                     except Exception as e:
                         await broadcast_log(f"[ERROR] Failed to process email: {str(e)}")
             else:

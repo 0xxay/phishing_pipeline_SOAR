@@ -1069,7 +1069,20 @@
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);
 
             ws.onmessage = (event) => {
-                appendLog(event.data);
+                const msg = event.data;
+                // Real-time case push from backend — update case list immediately
+                if (msg.startsWith('[NEW_CASE]')) {
+                    try {
+                        const newCase = JSON.parse(msg.slice('[NEW_CASE]'.length));
+                        allCases.push(newCase);
+                        filterCases();
+                        // Also refresh stats via API
+                        loadCases();
+                        showToast(`New case: ${newCase.verdict} — ${newCase.subject.slice(0, 40)}`, newCase.verdict === 'MALICIOUS' ? 'error' : 'success');
+                    } catch(e) { console.error('Failed to parse NEW_CASE', e); }
+                    return;
+                }
+                appendLog(msg);
             };
 
             ws.onerror = (error) => {

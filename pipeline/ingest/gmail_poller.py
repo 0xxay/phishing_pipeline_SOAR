@@ -5,7 +5,7 @@ import json
 from typing import List, Set
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow, Flow
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 import base64
 import config
@@ -14,7 +14,6 @@ from utils import logger, log_info, log_error, log_section
 
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
-REDIRECT_URI = "http://localhost:8080/"
 
 
 class GmailPoller:
@@ -44,17 +43,28 @@ class GmailPoller:
                         f"Gmail credentials not found at {config.GMAIL_CREDENTIALS_PATH}"
                     )
 
-                # Support both "web" and "installed" OAuth client types
+                # Support both "web" and "installed" OAuth client types.
+                # InstalledAppFlow has run_local_server(); web creds are
+                # normalized to installed format since we run locally.
                 with open(config.GMAIL_CREDENTIALS_PATH) as f:
                     client_info = json.load(f)
 
                 if "web" in client_info:
-                    flow = Flow.from_client_secrets_file(
-                        config.GMAIL_CREDENTIALS_PATH,
-                        scopes=SCOPES,
-                        redirect_uri=REDIRECT_URI,
-                    )
-                    creds = flow.run_local_server(port=8080, open_browser=True)
+                    import tempfile
+                    installed_info = {"installed": {
+                        **client_info["web"],
+                        "redirect_uris": ["http://localhost", "urn:ietf:wg:oauth:2.0:oob"],
+                    }}
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".json", delete=False
+                    ) as tmp:
+                        json.dump(installed_info, tmp)
+                        tmp_path = tmp.name
+                    try:
+                        flow = InstalledAppFlow.from_client_secrets_file(tmp_path, SCOPES)
+                        creds = flow.run_local_server(port=0)
+                    finally:
+                        os.unlink(tmp_path)
                 else:
                     flow = InstalledAppFlow.from_client_secrets_file(
                         config.GMAIL_CREDENTIALS_PATH, SCOPES
@@ -243,12 +253,19 @@ def setup_gmail_oauth():
         client_info = json.load(f)
 
     if "web" in client_info:
-        flow = Flow.from_client_secrets_file(
-            config.GMAIL_CREDENTIALS_PATH,
-            scopes=SCOPES,
-            redirect_uri=REDIRECT_URI,
-        )
-        creds = flow.run_local_server(port=8080, open_browser=True)
+        import tempfile
+        installed_info = {"installed": {
+            **client_info["web"],
+            "redirect_uris": ["http://localhost", "urn:ietf:wg:oauth:2.0:oob"],
+        }}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            json.dump(installed_info, tmp)
+            tmp_path = tmp.name
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(tmp_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        finally:
+            os.unlink(tmp_path)
     else:
         flow = InstalledAppFlow.from_client_secrets_file(
             config.GMAIL_CREDENTIALS_PATH, SCOPES
