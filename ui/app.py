@@ -10,7 +10,7 @@ from collections import deque
 import os
 import shutil
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,12 +49,37 @@ app.add_middleware(
 
 # Global state
 cases_store: List[Dict[str, Any]] = []
-log_broadcast = asyncio.Queue()
 log_history = deque(maxlen=200)
 pipeline_status = {"running": False, "last_poll": None, "started_at": None}
 polling_task: Optional[asyncio.Task] = None
 emails_processed_count = 0
 poll_history: List[Dict[str, Any]] = []
+
+# WebSocket connection manager — fan-out to all connected clients
+class ConnectionManager:
+    def __init__(self):
+        self.active: List[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        self.active.discard(ws) if hasattr(self.active, 'discard') else None
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, message: str):
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+manager = ConnectionManager()
 
 # Path to cases.json
 CASES_FILE = Path(__file__).parent.parent / "cases.json"
@@ -85,9 +110,9 @@ def save_cases():
 
 
 async def broadcast_log(message: str):
-    """Broadcast a log message to all WebSocket clients and keep history."""
+    """Broadcast a log message to all connected WebSocket clients and keep history."""
     log_history.append(message)
-    await log_broadcast.put(message)
+    await manager.broadcast(message)
 
 
 def case_to_dict(case: PhishingCase) -> Dict[str, Any]:
@@ -304,7 +329,7 @@ async def get_dashboard():
     static_dir = Path(__file__).parent / "static"
     index_file = static_dir / "index.html"
     if index_file.exists():
-        return index_file.read_text()
+        return index_file.read_text(encoding="utf-8")
     return HTMLResponse(content="Dashboard not found", status_code=404)
 
 
@@ -362,34 +387,20 @@ async def test_pipeline():
 
 @app.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
-    """WebSocket endpoint for live log streaming."""
-    await websocket.accept()
+    """WebSocket endpoint for live log streaming — supports multiple clients."""
+    await manager.connect(websocket)
     try:
-        # Send recent log history to client
-        for log in log_history:
-            await websocket.send_text(log)
-
-        # Send new logs as they arrive
+        # Send recent history to this new client
+        for msg in log_history:
+            await websocket.send_text(msg)
+        # Keep connection alive — manager handles outgoing, just wait for disconnect
         while True:
             try:
-                # Get message with timeout
-                message = await asyncio.wait_for(
-                    log_broadcast.get(), timeout=30.0
-                )
-                await websocket.send_text(message)
+                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
             except asyncio.TimeoutError:
-                # Send keepalive ping
                 await websocket.send_text("[PING]")
-            except asyncio.CancelledError:
-                break
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        log_error(f"WebSocket error: {str(e)}")
-        try:
-            await websocket.close()
-        except:
-            pass
+    except (WebSocketDisconnect, Exception):
+        manager.disconnect(websocket)
 
 
 async def run_pipeline_on_email(email: Email) -> PhishingCase:
@@ -614,7 +625,8 @@ async def get_config():
 
 
 @app.post("/api/config")
-async def update_config(data: Dict[str, Any]):
+async def update_config(request: Request):
+    data: Dict[str, Any] = await request.json()
     """Update configuration values in .env file."""
     try:
         env_vars = read_env_file()

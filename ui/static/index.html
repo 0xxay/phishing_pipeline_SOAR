@@ -353,13 +353,16 @@
 
         .case-expanded {
             display: none;
-            padding: 1.5rem;
             background: var(--bg-secondary);
             border-top: 1px solid var(--border);
         }
 
         .case-expanded.show {
-            display: block;
+            display: table-row;
+        }
+
+        .case-expanded td {
+            padding: 1.5rem;
         }
 
         .expand-section {
@@ -1206,17 +1209,20 @@
                     </div>
 
                     <div class="expand-section">
-                        <div class="expand-section-title">IOCs</div>
+                        <div class="expand-section-title">IOC Findings</div>
                         <table class="ioc-table">
                             <thead>
                                 <tr>
                                     <th>Type</th>
                                     <th>Value</th>
-                                    <th>Action</th>
+                                    <th>VirusTotal</th>
+                                    <th>AbuseIPDB</th>
+                                    <th>URLScan</th>
+                                    <th>Copy</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${renderIOCs(c.iocs)}
+                                ${renderIOCs(c.iocs, c.enrichments)}
                             </tbody>
                         </table>
                     </div>
@@ -1242,22 +1248,45 @@
             row.insertAdjacentElement('afterend', expandedRow);
         }
 
-        // Render IOCs
-        function renderIOCs(iocs) {
+        // Get enrichment cell for a given IOC value and source
+        function enrichCell(iocValue, source, enrichments) {
+            const hits = (enrichments || []).filter(e => e.ioc === iocValue && e.source === source);
+            if (!hits.length) return '<span style="color:var(--text-secondary)">—</span>';
+            const e = hits[0];
+            const v = (e.verdict || 'unknown').toLowerCase();
+            const color = v === 'malicious' ? 'var(--accent-red)' : v === 'suspicious' ? 'var(--accent-yellow)' : v === 'clean' ? 'var(--accent-green)' : 'var(--text-secondary)';
+            let detail = '';
+            if (source === 'virustotal') {
+                const mal = e.details?.malicious ?? '?';
+                const sus = e.details?.suspicious ?? '?';
+                detail = `${mal}M/${sus}S`;
+            } else if (source === 'abuseipdb') {
+                detail = e.details?.confidence_score != null ? `${e.details.confidence_score}%` : (e.score != null ? `${e.score}%` : '0%');
+            } else if (source === 'urlscan') {
+                detail = e.details?.message ? 'N/A' : (e.score != null ? `${e.score}` : v);
+            }
+            return `<span style="color:${color};font-weight:600;">${detail || v}</span>`;
+        }
+
+        // Render IOCs with enrichment scores per source
+        function renderIOCs(iocs, enrichments) {
             let html = '';
-            iocs.urls.forEach(ioc => {
-                html += `<tr><td>URL</td><td style="font-family: monospace; font-size: 0.8rem;">${ioc}</td><td><button class="copy-btn" onclick="copyToClipboard('${ioc}')">Copy</button></td></tr>`;
-            });
-            iocs.domains.forEach(ioc => {
-                html += `<tr><td>Domain</td><td style="font-family: monospace; font-size: 0.8rem;">${ioc}</td><td><button class="copy-btn" onclick="copyToClipboard('${ioc}')">Copy</button></td></tr>`;
-            });
-            iocs.ips.forEach(ioc => {
-                html += `<tr><td>IP</td><td style="font-family: monospace; font-size: 0.8rem;">${ioc}</td><td><button class="copy-btn" onclick="copyToClipboard('${ioc}')">Copy</button></td></tr>`;
-            });
-            iocs.hashes.forEach(ioc => {
-                html += `<tr><td>Hash</td><td style="font-family: monospace; font-size: 0.8rem;">${ioc}</td><td><button class="copy-btn" onclick="copyToClipboard('${ioc}')">Copy</button></td></tr>`;
-            });
-            return html || '<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">No IOCs</td></tr>';
+            const addRow = (type, ioc) => {
+                const safe = ioc.replace(/'/g, "\\'");
+                html += `<tr>
+                    <td style="color:var(--text-secondary);font-size:0.75rem;text-transform:uppercase;">${type}</td>
+                    <td style="font-family:monospace;font-size:0.8rem;word-break:break-all;">${ioc}</td>
+                    <td>${enrichCell(ioc, 'virustotal', enrichments)}</td>
+                    <td>${enrichCell(ioc, 'abuseipdb', enrichments)}</td>
+                    <td>${enrichCell(ioc, 'urlscan', enrichments)}</td>
+                    <td><button class="copy-btn" onclick="copyToClipboard('${safe}')">Copy</button></td>
+                </tr>`;
+            };
+            iocs.urls.forEach(ioc => addRow('URL', ioc));
+            iocs.ips.forEach(ioc => addRow('IP', ioc));
+            iocs.domains.forEach(ioc => addRow('Domain', ioc));
+            iocs.hashes.forEach(ioc => addRow('Hash', ioc));
+            return html || '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">No IOCs extracted</td></tr>';
         }
 
         // Copy to clipboard
