@@ -1263,8 +1263,10 @@
 
                     <div class="expand-section">
                         <div class="expand-section-title">Response Actions</div>
-                        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                            ${c.blocked ? '<span class="badge badge-malicious">Auto-Blocked</span>' : '<span class="badge" style="opacity:0.5;">Not Blocked</span>'}
+                        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                            ${c.blocked
+                                ? `<span class="badge badge-malicious">Labeled in Gmail</span>`
+                                : `<span class="badge" style="opacity:0.4;">Not Labeled</span>`}
                             ${c.slack_sent ? '<span class="badge badge-clean">Slack Notified</span>' : ''}
                             ${c.thehive_case_id ? `<span class="badge">TheHive: ${escHtml(c.thehive_case_id)}</span>` : ''}
                         </div>

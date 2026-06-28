@@ -15,6 +15,7 @@ Override rules (first match wins):
   - everything CLEAN                → CLEAN
 """
 import json
+import re
 import asyncio
 from typing import List, Tuple, Optional
 from models import Email, IOCs, EnrichmentResult, Verdict, VerdictType
@@ -22,7 +23,137 @@ from utils import log_debug
 import config
 
 
-# ─── Hard signal evaluation ──────────────────────────────────────────────────
+# ─── Header signal analysis ──────────────────────────────────────────────────
+
+def _eval_header_signals(email: Email) -> Tuple[int, int, List[str]]:
+    """
+    Check email authentication headers and metadata for red flags.
+    Returns (mal_count, sus_count, signal_lines).
+    """
+    mal = 0
+    sus = 0
+    lines = []
+    h = {k.lower(): str(v) for k, v in (email.headers or {}).items()}
+
+    # SPF check
+    spf_raw = h.get("received-spf", h.get("x-spf-status", ""))
+    auth_results = h.get("authentication-results", "")
+    if re.search(r"\bfail\b", spf_raw, re.I) or re.search(r"spf=fail", auth_results, re.I):
+        mal += 1
+        lines.append("• SPF: FAIL — sender IP not authorized by domain → MALICIOUS")
+    elif re.search(r"\bsoftfail\b|\bneutral\b|\bnone\b", spf_raw, re.I):
+        sus += 1
+        lines.append(f"• SPF: {spf_raw.strip()[:60]} — weak/missing authorization → SUSPICIOUS")
+    elif re.search(r"\bpass\b", spf_raw, re.I) or re.search(r"spf=pass", auth_results, re.I):
+        lines.append("• SPF: PASS → NEUTRAL")
+    else:
+        sus += 1
+        lines.append("• SPF: header absent — cannot verify sender authorization → SUSPICIOUS")
+
+    # DKIM check
+    if re.search(r"dkim=fail", auth_results, re.I):
+        mal += 1
+        lines.append("• DKIM: FAIL — email signature invalid, likely forged → MALICIOUS")
+    elif re.search(r"dkim=pass", auth_results, re.I):
+        lines.append("• DKIM: PASS → NEUTRAL")
+    elif not h.get("dkim-signature"):
+        sus += 1
+        lines.append("• DKIM: no signature present — sender identity unverified → SUSPICIOUS")
+
+    # DMARC check
+    if re.search(r"dmarc=fail", auth_results, re.I):
+        mal += 1
+        lines.append("• DMARC: FAIL — domain policy violated, high spoofing risk → MALICIOUS")
+    elif re.search(r"dmarc=pass", auth_results, re.I):
+        lines.append("• DMARC: PASS → NEUTRAL")
+
+    # Reply-To domain mismatch
+    from_raw = email.sender or ""
+    reply_raw = email.reply_to or ""
+    from_domain = re.search(r"@([\w.\-]+)", from_raw)
+    reply_domain = re.search(r"@([\w.\-]+)", reply_raw)
+    if from_domain and reply_domain:
+        fd = from_domain.group(1).lower().rstrip(">")
+        rd = reply_domain.group(1).lower().rstrip(">")
+        if fd != rd:
+            sus += 1
+            lines.append(
+                f"• Reply-To domain mismatch: From=@{fd} vs Reply-To=@{rd}"
+                f" — responses go to a different domain → SUSPICIOUS"
+            )
+
+    # Display name / From domain mismatch (e.g. "PayPal <attacker@evil.com>")
+    display_match = re.match(r'^"?([^"<]+)"?\s*<', from_raw)
+    if display_match:
+        display_name = display_match.group(1).strip().lower()
+        from_dom = from_domain.group(1).lower() if from_domain else ""
+        # Check if display name looks like a brand but domain doesn't match
+        for brand in ["paypal", "amazon", "google", "microsoft", "apple", "bank", "netflix", "fedex", "dhl"]:
+            if brand in display_name and brand not in from_dom:
+                sus += 1
+                lines.append(
+                    f"• Display name impersonation: '{display_match.group(1).strip()}' "
+                    f"uses brand name '{brand}' but sender domain is '{from_dom}' → SUSPICIOUS"
+                )
+                break
+
+    if not lines:
+        lines.append("• Header analysis: no authentication headers found → SUSPICIOUS")
+        sus += 1
+
+    return mal, sus, lines
+
+
+# ─── IOC signal analysis ─────────────────────────────────────────────────────
+
+def _eval_ioc_signals(iocs: IOCs) -> Tuple[int, int, List[str]]:
+    """Check IOC patterns for inherent red flags."""
+    mal = 0
+    sus = 0
+    lines = []
+
+    # Suspicious TLDs in URLs/domains
+    suspicious_tlds = {".ru", ".cn", ".tk", ".xyz", ".top", ".pw", ".cc", ".su", ".to"}
+    all_domains = iocs.domains + [
+        re.search(r"https?://([^/]+)", u).group(1) for u in iocs.urls
+        if re.search(r"https?://([^/]+)", u)
+    ]
+    for domain in all_domains:
+        for tld in suspicious_tlds:
+            if domain.lower().endswith(tld):
+                sus += 1
+                lines.append(f"• Suspicious TLD: {domain} uses '{tld}' — high-abuse TLD → SUSPICIOUS")
+                break
+
+    # IP-based URLs (no domain)
+    ip_urls = [u for u in iocs.urls if re.search(r"https?://\d{1,3}\.\d{1,3}\.", u)]
+    if ip_urls:
+        sus += 1
+        lines.append(f"• IP-based URL(s): {ip_urls[0][:60]} — legitimate sites rarely use raw IPs → SUSPICIOUS")
+
+    # URL shorteners
+    shorteners = ["bit.ly", "tinyurl", "t.co", "goo.gl", "ow.ly", "tiny.cc", "rb.gy"]
+    for url in iocs.urls:
+        if any(s in url for s in shorteners):
+            sus += 1
+            lines.append(f"• URL shortener detected: {url[:60]} — hides true destination → SUSPICIOUS")
+            break
+
+    # Total IOC count
+    total = len(iocs.all_iocs())
+    if total >= 5:
+        sus += 1
+        lines.append(f"• High IOC density: {total} indicators extracted — unusual for legitimate email → SUSPICIOUS")
+    elif total > 0:
+        lines.append(f"• IOC count: {total} indicator(s) extracted → NEUTRAL")
+
+    if not lines:
+        lines.append("• IOC pattern analysis: no inherently suspicious patterns detected → NEUTRAL")
+
+    return mal, sus, lines
+
+
+# ─── Threat intel signal evaluation ──────────────────────────────────────────
 
 def _eval_hard_signals(enrichments: List[EnrichmentResult]):
     """
@@ -97,107 +228,132 @@ def _build_verdict(
     hard_mal: int,
     hard_sus: int,
     hard_lines: List[str],
+    header_mal: int,
+    header_sus: int,
+    header_lines: List[str],
+    ioc_mal: int,
+    ioc_sus: int,
+    ioc_lines: List[str],
     ai_verdict: VerdictType,
     ai_confidence: float,
     ai_signals: List[str],
     ai_mitre: Optional[str],
 ) -> Verdict:
+    # Combine all hard + structural signals
+    total_mal = hard_mal + header_mal + ioc_mal
+    total_sus = hard_sus + header_sus + ioc_sus
 
-    # ── Decision logic ────────────────────────────────────────────────────
-    if hard_mal >= 2:
-        final     = VerdictType.MALICIOUS
-        confidence = min(95, 60 + hard_mal * 12)
-        rule = (
-            f"• {hard_mal} independent threat intel sources confirmed MALICIOUS — "
-            f"hard-signal majority overrides AI"
-        )
-        ai_corr = "YES" if ai_verdict == VerdictType.MALICIOUS else "NO (AI disagreed but overridden)"
-
-    elif hard_mal == 1 and ai_verdict == VerdictType.MALICIOUS:
+    # ── Decision logic (uses combined total_mal / total_sus) ─────────────
+    if total_mal >= 2:
         final      = VerdictType.MALICIOUS
-        confidence = min(90, 55 + ai_confidence * 0.3)
+        confidence = min(95, 55 + total_mal * 10)
         rule = (
-            "• 1 hard-MALICIOUS signal corroborated by AI content analysis → MALICIOUS confirmed"
+            f"• {total_mal} independent signals confirmed MALICIOUS across threat intel "
+            f"and header/IOC analysis — hard-signal majority overrides AI"
         )
+        ai_corr = "YES" if ai_verdict == VerdictType.MALICIOUS else "NO (AI disagreed but overridden by hard signals)"
+
+    elif total_mal == 1 and ai_verdict == VerdictType.MALICIOUS:
+        final      = VerdictType.MALICIOUS
+        confidence = min(88, 52 + ai_confidence * 0.3)
+        rule = "• 1 confirmed MALICIOUS signal corroborated by AI content analysis → MALICIOUS"
         ai_corr = "YES"
 
-    elif hard_mal == 1:
+    elif total_mal == 1:
         final      = VerdictType.SUSPICIOUS
-        confidence = 65
+        confidence = min(72, 55 + total_sus * 3)
         rule = (
-            f"• 1 hard-MALICIOUS signal found but AI verdict is {ai_verdict.value} — "
-            f"conflict → escalated to SUSPICIOUS pending review"
+            f"• 1 MALICIOUS signal found but AI verdict is {ai_verdict.value} — "
+            f"conflict → SUSPICIOUS pending manual review"
         )
         ai_corr = f"CONFLICT (AI said {ai_verdict.value})"
 
-    elif hard_sus > 0 and ai_verdict == VerdictType.MALICIOUS:
-        final      = VerdictType.SUSPICIOUS
-        confidence = 70
+    elif total_sus >= 3 and ai_verdict == VerdictType.MALICIOUS:
+        final      = VerdictType.MALICIOUS
+        confidence = min(82, 50 + total_sus * 6)
         rule = (
-            "• Suspicious hard signals + AI flags MALICIOUS → elevated to SUSPICIOUS "
-            "(insufficient hard evidence for MALICIOUS)"
+            f"• {total_sus} SUSPICIOUS signals + AI flags MALICIOUS → converging evidence → MALICIOUS"
         )
-        ai_corr = "ELEVATED"
+        ai_corr = "ELEVATED TO MALICIOUS"
 
-    elif hard_sus > 0:
+    elif total_sus > 0 and ai_verdict in (VerdictType.MALICIOUS, VerdictType.SUSPICIOUS):
         final      = VerdictType.SUSPICIOUS
-        confidence = min(75, 40 + hard_sus * 10)
+        confidence = min(78, 38 + total_sus * 8)
         rule = (
-            f"• {hard_sus} suspicious indicator(s) from threat intel, no confirmed malicious → SUSPICIOUS"
+            f"• {total_sus} suspicious indicator(s) across signals + AI agrees → SUSPICIOUS"
         )
+        ai_corr = f"YES (AI: {ai_verdict.value})"
+
+    elif total_sus > 0:
+        final      = VerdictType.SUSPICIOUS
+        confidence = min(65, 35 + total_sus * 6)
+        rule = f"• {total_sus} suspicious indicator(s) detected, no confirmed malicious → SUSPICIOUS"
         ai_corr = f"AI said {ai_verdict.value}"
 
     elif ai_verdict == VerdictType.MALICIOUS:
         final      = VerdictType.SUSPICIOUS
-        confidence = min(60, ai_confidence * 0.6)
+        confidence = min(58, ai_confidence * 0.55)
         rule = (
-            "• AI flagged MALICIOUS but zero hard threat intel signals confirm it → "
+            "• AI flagged MALICIOUS but zero hard/header/IOC signals confirm it → "
             "downgraded to SUSPICIOUS (AI alone cannot confirm MALICIOUS)"
         )
-        ai_corr = "DOWNGRADED — no corroborating hard signal"
+        ai_corr = "DOWNGRADED — no corroborating signals"
 
     elif ai_verdict == VerdictType.SUSPICIOUS:
         final      = VerdictType.SUSPICIOUS
-        confidence = min(55, ai_confidence * 0.7)
-        rule = "• AI flagged SUSPICIOUS content patterns, no hard signals → SUSPICIOUS"
+        confidence = min(52, ai_confidence * 0.65)
+        rule = "• AI flagged SUSPICIOUS content patterns with no hard signals → SUSPICIOUS"
         ai_corr = "YES"
 
     else:
         final      = VerdictType.CLEAN
-        confidence = 82
-        rule = "• No hard threat intel signals and AI content analysis found no phishing indicators → CLEAN"
+        confidence = min(88, 72 + max(0, 5 - total_sus) * 3)
+        rule = "• No MALICIOUS or SUSPICIOUS signals detected across all layers → CLEAN"
         ai_corr = "YES"
 
     # ── Build structured reasoning block ─────────────────────────────────
-    lines = []
-    lines.append(f"VERDICT: {final.value}  ({confidence:.0f}% confidence)")
-    lines.append("")
-    lines.append("── THREAT INTELLIGENCE SIGNALS ──")
-    lines.extend(hard_lines)
-    lines.append(f"• Summary: {hard_mal} MALICIOUS signal(s), {hard_sus} SUSPICIOUS signal(s)")
-    lines.append("")
-    lines.append("── AI CONTENT ANALYSIS ──")
-    if ai_signals:
-        lines.extend([f"• {s}" for s in ai_signals])
-    else:
-        lines.append("• No content signals extracted")
-    lines.append(f"• AI verdict: {ai_verdict.value} ({ai_confidence:.0f}% confidence)")
-    lines.append("")
-    lines.append("── DECISION LOGIC ──")
-    lines.append(rule)
-    lines.append(f"• AI corroboration: {ai_corr}")
-    lines.append(f"• Final verdict: {final.value}")
-    lines.append("")
-    if ai_mitre:
-        lines.append("── MITRE ATT&CK ──")
-        lines.append(f"• {ai_mitre}")
+    out = []
+    out.append(f"VERDICT: {final.value}  ({confidence:.0f}% confidence)")
+    out.append("")
 
-    reasoning = "\n".join(lines)
+    out.append("── THREAT INTELLIGENCE SIGNALS ──")
+    out.extend(hard_lines)
+    out.append(f"• Sub-total: {hard_mal} MALICIOUS, {hard_sus} SUSPICIOUS from threat intel APIs")
+    out.append("")
+
+    out.append("── EMAIL HEADER ANALYSIS ──")
+    out.extend(header_lines)
+    out.append(f"• Sub-total: {header_mal} MALICIOUS, {header_sus} SUSPICIOUS from header checks")
+    out.append("")
+
+    out.append("── IOC PATTERN ANALYSIS ──")
+    out.extend(ioc_lines)
+    out.append(f"• Sub-total: {ioc_mal} MALICIOUS, {ioc_sus} SUSPICIOUS from IOC patterns")
+    out.append("")
+
+    out.append("── AI CONTENT ANALYSIS ──")
+    if ai_signals:
+        out.extend([f"• {s}" for s in ai_signals])
+    else:
+        out.append("• No content signals extracted by AI")
+    out.append(f"• AI verdict: {ai_verdict.value} ({ai_confidence:.0f}% confidence)")
+    out.append("")
+
+    out.append("── DECISION LOGIC ──")
+    out.append(f"• Combined signals: {total_mal} MALICIOUS, {total_sus} SUSPICIOUS across all layers")
+    out.append(rule)
+    out.append(f"• AI corroboration: {ai_corr}")
+    out.append(f"• Final verdict: {final.value}")
+    out.append("")
+
+    if ai_mitre:
+        out.append("── MITRE ATT&CK ──")
+        out.append(f"• {ai_mitre}")
 
     return Verdict(
         value=final,
         confidence=confidence,
-        reasoning=reasoning,
+        reasoning="\n".join(out),
         mitre_tactic=ai_mitre,
     )
 
@@ -327,16 +483,27 @@ class ScoreAggregator:
         iocs: IOCs,
         enrichments: List[EnrichmentResult],
     ) -> Verdict:
-        # Step 1: deterministic hard signals
+        # Step 1a: threat intel hard signals (VT / AbuseIPDB / URLScan)
         hard_mal, hard_sus, hard_lines = _eval_hard_signals(enrichments)
 
-        # Step 2: AI content analysis
+        # Step 1b: email header authentication signals (SPF / DKIM / DMARC / Reply-To)
+        header_mal, header_sus, header_lines = _eval_header_signals(email)
+
+        # Step 1c: IOC pattern signals (suspicious TLDs / IP URLs / shorteners)
+        ioc_mal, ioc_sus, ioc_lines = _eval_ioc_signals(iocs)
+
+        total_mal = hard_mal + header_mal + ioc_mal
+        total_sus = hard_sus + header_sus + ioc_sus
+
+        # Step 2: AI content analysis (with full context)
         ai_verdict, ai_conf, ai_signals, ai_mitre = await _ai_analyze(
-            email, iocs, enrichments, hard_mal, hard_sus
+            email, iocs, enrichments, total_mal, total_sus
         )
 
-        # Step 3: merge with override rules → structured verdict + reasoning
+        # Step 3: merge all layers → structured verdict + reasoning
         return _build_verdict(
             hard_mal, hard_sus, hard_lines,
+            header_mal, header_sus, header_lines,
+            ioc_mal, ioc_sus, ioc_lines,
             ai_verdict, ai_conf, ai_signals, ai_mitre,
         )

@@ -23,7 +23,7 @@ from pipeline.enrich.virustotal import VirusTotalEnricher
 from pipeline.enrich.abuseipdb import AbuseIPDBEnricher
 from pipeline.enrich.urlscan import URLScanEnricher
 from pipeline.decide.score_aggregator import ScoreAggregator
-from pipeline.respond.auto_block import AutoBlocker
+from pipeline.respond.gmail_labeler import execute as gmail_label
 from pipeline.respond.analyst_alert import AnalystAlert
 from pipeline.respond.false_positive import FalsePositiveLogger
 from pipeline.close.thehive_client import TheHiveClient
@@ -267,19 +267,21 @@ SHA256: 2c26b46911185131006ba5991596cdb8f1e89d97c27ce88a9e4fa9d95f6b8f6
     # Stage 4: Response Actions
     await broadcast_log("[INFO] Executing response actions...")
     if verdict.value == VerdictType.MALICIOUS:
-        await broadcast_log("[WARNING] MALICIOUS verdict - executing auto-block")
+        await broadcast_log(f"[WARNING] MALICIOUS verdict — labeling email in Gmail as '{config.GMAIL_LABEL}'")
         try:
-            await AutoBlocker.execute(case)
-            case.blocked = True
+            await gmail_label(case)
+            await broadcast_log(f"[SUCCESS] Gmail label applied: {config.GMAIL_LABEL}")
         except Exception as e:
-            await broadcast_log(f"[WARNING] Auto-block error: {str(e)}")
+            await broadcast_log(f"[WARNING] Gmail label error: {str(e)}")
 
     elif verdict.value == VerdictType.SUSPICIOUS:
-        await broadcast_log("[WARNING] SUSPICIOUS verdict - alerting analyst")
+        await broadcast_log(f"[WARNING] SUSPICIOUS verdict — labeling email in Gmail as '{config.GMAIL_LABEL}/suspicious'")
         try:
+            await gmail_label(case)
+            await broadcast_log(f"[SUCCESS] Gmail label applied: {config.GMAIL_LABEL}/suspicious")
             await AnalystAlert.execute(case)
         except Exception as e:
-            await broadcast_log(f"[WARNING] Analyst alert error: {str(e)}")
+            await broadcast_log(f"[WARNING] Label/alert error: {str(e)}")
 
     else:  # CLEAN
         await broadcast_log("[SUCCESS] CLEAN verdict - no action needed")
@@ -473,19 +475,21 @@ async def run_pipeline_on_email(email: Email) -> PhishingCase:
     # Stage 4: Response Actions
     await broadcast_log("[INFO] Executing response actions...")
     if verdict.value == VerdictType.MALICIOUS:
-        await broadcast_log("[WARNING] MALICIOUS verdict - executing auto-block")
+        await broadcast_log(f"[WARNING] MALICIOUS verdict — labeling email in Gmail as '{config.GMAIL_LABEL}'")
         try:
-            await AutoBlocker.execute(case)
-            case.blocked = True
+            await gmail_label(case)
+            await broadcast_log(f"[SUCCESS] Gmail label applied: {config.GMAIL_LABEL}")
         except Exception as e:
-            await broadcast_log(f"[WARNING] Auto-block error: {str(e)}")
+            await broadcast_log(f"[WARNING] Gmail label error: {str(e)}")
 
     elif verdict.value == VerdictType.SUSPICIOUS:
-        await broadcast_log("[WARNING] SUSPICIOUS verdict - alerting analyst")
+        await broadcast_log(f"[WARNING] SUSPICIOUS verdict — labeling email in Gmail as '{config.GMAIL_LABEL}/suspicious'")
         try:
+            await gmail_label(case)
+            await broadcast_log(f"[SUCCESS] Gmail label applied: {config.GMAIL_LABEL}/suspicious")
             await AnalystAlert.execute(case)
         except Exception as e:
-            await broadcast_log(f"[WARNING] Analyst alert error: {str(e)}")
+            await broadcast_log(f"[WARNING] Label/alert error: {str(e)}")
 
     else:  # CLEAN
         await broadcast_log("[SUCCESS] CLEAN verdict - no action needed")
