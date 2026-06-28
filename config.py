@@ -16,12 +16,16 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite-preview-06-17")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" or "openai"
 
-# Gmail Configuration
+# Gmail IMAP Configuration (App Password — no OAuth needed)
+GMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+GMAIL_MAX_RESULTS = int(os.getenv("GMAIL_MAX_RESULTS", "50"))
+GMAIL_PROCESSED_IDS_FILE = os.getenv("GMAIL_PROCESSED_IDS_FILE", "processed_ids.json")
+
+# Legacy OAuth fields (kept for API compatibility, not used)
 GMAIL_CREDENTIALS_PATH = os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json")
 GMAIL_TOKEN_PATH = os.getenv("GMAIL_TOKEN_PATH", "token.pickle")
 GMAIL_LABEL = os.getenv("GMAIL_LABEL", "phishing")
-GMAIL_MAX_RESULTS = int(os.getenv("GMAIL_MAX_RESULTS", "50"))
-GMAIL_PROCESSED_IDS_FILE = os.getenv("GMAIL_PROCESSED_IDS_FILE", "processed_ids.json")
 GMAIL_SCAN_ALL = os.getenv("GMAIL_SCAN_ALL", "true").lower() == "true"
 
 # Enrichment API Keys

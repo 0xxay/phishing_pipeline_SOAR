@@ -708,7 +708,7 @@ async def get_gmail_status():
     return JSONResponse(
         content={
             "polling": pipeline_status["running"],
-            "authenticated": os.path.exists(config.GMAIL_TOKEN_PATH),
+            "authenticated": bool(config.GMAIL_USER and config.GMAIL_APP_PASSWORD),
             "last_poll": pipeline_status["last_poll"],
             "emails_processed": emails_processed_count,
             "poll_interval": config.POLL_INTERVAL,
