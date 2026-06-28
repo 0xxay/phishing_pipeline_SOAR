@@ -103,12 +103,18 @@ class GmailPoller:
             _, data = mail.search(None, "ALL")
             all_ids = data[0].split()
 
-            # Take the most recent N emails
-            recent_ids = all_ids[-config.GMAIL_MAX_RESULTS:]
-            log_info(f"Checking {len(recent_ids)} most recent inbox emails...")
+            is_first_run = len(self._processed_ids) == 0
+            if is_first_run:
+                # First run: cap at most recent GMAIL_MAX_RESULTS to avoid scanning 4000+ emails
+                candidate_ids = all_ids[-config.GMAIL_MAX_RESULTS:]
+                log_info(f"First run — scanning {len(candidate_ids)} most recent emails")
+            else:
+                # Subsequent runs: scan all, processed_ids set handles skipping (O(1) per email)
+                candidate_ids = all_ids
+                log_info(f"Checking {len(all_ids)} inbox emails for new arrivals...")
 
             skipped = 0
-            for num in reversed(recent_ids):
+            for num in reversed(candidate_ids):
                 try:
                     _, msg_data = mail.fetch(num, "(RFC822)")
                     raw = msg_data[0][1]
