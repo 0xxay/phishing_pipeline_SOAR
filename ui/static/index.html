@@ -1001,6 +1001,7 @@
         let allCases = [];
         let ws = null;
         let isPolling = false;
+        let expandedCaseId = null;  // track which case is open so refresh doesn't close it
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -1010,8 +1011,8 @@
             loadGmailStatus();
             loadPollHistory();
 
-            // Auto-refresh
-            setInterval(loadCases, 5000);
+            // Auto-refresh — only re-render table when no row is expanded
+            setInterval(() => { if (!expandedCaseId) loadCases(); else loadCasesQuiet(); }, 5000);
             setInterval(loadGmailStatus, 3000);
             setInterval(() => {
                 if (document.getElementById('gmail').style.display !== 'none') {
@@ -1127,44 +1128,63 @@
             }
         }
 
-        // Load and display cases
+        // Load cases + refresh everything (only when no row is expanded)
         async function loadCases() {
             try {
-                const res = await fetch('/api/cases');
-                const data = await res.json();
+                const [casesRes, statusRes] = await Promise.all([
+                    fetch('/api/cases'),
+                    fetch('/api/status'),
+                ]);
+                const data = await casesRes.json();
+                const status = await statusRes.json();
                 allCases = data.cases || [];
 
-                const statusRes = await fetch('/api/status');
-                const status = await statusRes.json();
-
-                // Update stats
                 document.getElementById('stat-total').textContent = status.total_cases;
                 document.getElementById('stat-malicious').textContent = status.malicious;
                 document.getElementById('stat-suspicious').textContent = status.suspicious;
                 document.getElementById('stat-clean').textContent = status.clean;
 
-                // Update recent cases
                 const recentDiv = document.getElementById('recent-cases');
                 if (allCases.length === 0) {
                     recentDiv.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-secondary);">No cases yet</div>';
                 } else {
-                    recentDiv.innerHTML = allCases.slice(-5).reverse().map((c, i) => `
-                        <div class="case-row" onclick="expandCase(this, ${i})">
+                    recentDiv.innerHTML = allCases.slice(-5).reverse().map(c => `
+                        <div class="case-row">
                             <div class="case-row-header">
                                 <span style="color: var(--text-secondary); font-size: 0.75rem;">${timeAgo(c.timestamp)}</span>
                                 <span class="badge badge-${c.verdict.toLowerCase()}">${c.verdict}</span>
                             </div>
-                            <div class="case-row-subject">${c.subject}</div>
-                            <div class="case-row-sender">${c.sender}</div>
+                            <div class="case-row-subject">${escHtml(c.subject)}</div>
+                            <div class="case-row-sender">${escHtml(c.sender)}</div>
                         </div>
                     `).join('');
                 }
 
-                // Update cases table
                 filterCases();
             } catch (error) {
                 console.error('Failed to load cases:', error);
             }
+        }
+
+        // Silent refresh — update allCases + stats without touching the table (preserves open rows)
+        async function loadCasesQuiet() {
+            try {
+                const [casesRes, statusRes] = await Promise.all([
+                    fetch('/api/cases'),
+                    fetch('/api/status'),
+                ]);
+                const data = await casesRes.json();
+                const status = await statusRes.json();
+                allCases = data.cases || [];
+                document.getElementById('stat-total').textContent = status.total_cases;
+                document.getElementById('stat-malicious').textContent = status.malicious;
+                document.getElementById('stat-suspicious').textContent = status.suspicious;
+                document.getElementById('stat-clean').textContent = status.clean;
+            } catch (e) { /* silent */ }
+        }
+
+        function escHtml(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
 
         // Filter cases table
@@ -1196,69 +1216,97 @@
             `).join('');
         }
 
-        // Expand case row
+        // Expand / collapse case row — tracks open state so auto-refresh doesn't kill it
         function expandCaseRow(row, caseIndex) {
             const c = allCases[caseIndex];
             const nextRow = row.nextElementSibling;
 
             if (nextRow && nextRow.classList.contains('case-expanded')) {
-                nextRow.classList.remove('show');
                 nextRow.remove();
+                expandedCaseId = null;
                 return;
             }
 
+            // Close any other open row first
+            document.querySelectorAll('.case-expanded').forEach(r => r.remove());
+            expandedCaseId = c.id;
+
             const expandedRow = document.createElement('tr');
             expandedRow.className = 'case-expanded show';
+            expandedRow.dataset.caseId = c.id;
             expandedRow.innerHTML = `
                 <td colspan="7">
                     <div class="expand-section">
                         <div class="expand-section-title">Email Details</div>
-                        <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 6px;">
-                            <div style="margin-bottom: 0.75rem;"><strong>Subject:</strong> ${c.subject}</div>
-                            <div style="margin-bottom: 0.75rem;"><strong>Sender:</strong> <span style="font-family: monospace;">${c.sender}</span></div>
-                            <div style="margin-bottom: 0.75rem;"><strong>Reply-To:</strong> <span style="font-family: monospace;">${c.reply_to || 'N/A'}</span></div>
-                            ${c.mitre_tactic ? `<div><strong>MITRE Tactic:</strong> <span class="badge">${c.mitre_tactic}</span></div>` : ''}
+                        <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 6px; font-size:0.875rem;">
+                            <div style="margin-bottom:0.5rem;"><strong>Subject:</strong> ${escHtml(c.subject)}</div>
+                            <div style="margin-bottom:0.5rem;"><strong>Sender:</strong> <span style="font-family:monospace;">${escHtml(c.sender)}</span></div>
+                            <div style="margin-bottom:0.5rem;"><strong>Reply-To:</strong> <span style="font-family:monospace;">${escHtml(c.reply_to || 'N/A')}</span></div>
+                            ${c.mitre_tactic ? `<div><strong>MITRE:</strong> <span class="badge">${escHtml(c.mitre_tactic)}</span></div>` : ''}
                         </div>
                     </div>
 
                     <div class="expand-section">
                         <div class="expand-section-title">IOC Findings</div>
                         <table class="ioc-table">
-                            <thead>
-                                <tr>
-                                    <th>Type</th>
-                                    <th>Value</th>
-                                    <th>VirusTotal</th>
-                                    <th>AbuseIPDB</th>
-                                    <th>URLScan</th>
-                                    <th>Copy</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${renderIOCs(c.iocs, c.enrichments)}
-                            </tbody>
+                            <thead><tr><th>Type</th><th>Value</th><th>VirusTotal</th><th>AbuseIPDB</th><th>URLScan</th><th>Copy</th></tr></thead>
+                            <tbody>${renderIOCs(c.iocs, c.enrichments)}</tbody>
                         </table>
                     </div>
 
                     <div class="expand-section">
-                        <div class="expand-section-title">AI Analysis</div>
-                        <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
-                            ${c.reasoning}
+                        <div class="expand-section-title">Verdict Analysis</div>
+                        <div style="background: var(--bg-secondary); padding: 1.25rem; border-radius: 6px; border-left: 4px solid ${verdictColor(c.verdict)}; font-size:0.85rem; line-height:1.8;">
+                            ${renderReasoning(c.reasoning)}
                         </div>
                     </div>
 
                     <div class="expand-section">
                         <div class="expand-section-title">Response Actions</div>
-                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                            ${c.blocked ? '<span class="badge badge-malicious">Blocked</span>' : ''}
-                            ${c.slack_sent ? '<span class="badge badge-clean">Slack Sent</span>' : ''}
-                            ${c.thehive_case_id ? '<span class="badge">TheHive Case</span>' : ''}
+                        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                            ${c.blocked ? '<span class="badge badge-malicious">Auto-Blocked</span>' : '<span class="badge" style="opacity:0.5;">Not Blocked</span>'}
+                            ${c.slack_sent ? '<span class="badge badge-clean">Slack Notified</span>' : ''}
+                            ${c.thehive_case_id ? `<span class="badge">TheHive: ${escHtml(c.thehive_case_id)}</span>` : ''}
                         </div>
                     </div>
                 </td>
             `;
 
             row.insertAdjacentElement('afterend', expandedRow);
+        }
+
+        function verdictColor(verdict) {
+            if (verdict === 'MALICIOUS') return 'var(--accent-red)';
+            if (verdict === 'SUSPICIOUS') return 'var(--accent-yellow)';
+            return 'var(--accent-green)';
+        }
+
+        // Render structured reasoning — each line prefixed with ── or • gets styled
+        function renderReasoning(text) {
+            if (!text) return '<em style="color:var(--text-secondary)">No analysis available</em>';
+            return text.split('\n').map(line => {
+                line = escHtml(line.trimEnd());
+                if (!line.trim()) return '<div style="height:0.4rem;"></div>';
+                if (line.startsWith('──') || line.startsWith('--')) {
+                    return `<div style="color:var(--accent-blue);font-weight:700;margin-top:0.75rem;letter-spacing:0.03em;">${line}</div>`;
+                }
+                if (line.match(/^[•·▸\-]\s/)) {
+                    const rest = line.slice(2);
+                    // colour-code signal keywords
+                    const styled = rest
+                        .replace(/\bMALICIOUS\b/g, '<span style="color:var(--accent-red);font-weight:700;">MALICIOUS</span>')
+                        .replace(/\bSUSPICIOUS\b/g, '<span style="color:var(--accent-yellow);font-weight:700;">SUSPICIOUS</span>')
+                        .replace(/\bCLEAN\b/g, '<span style="color:var(--accent-green);font-weight:700;">CLEAN</span>')
+                        .replace(/\bNEUTRAL\b/g, '<span style="color:var(--text-secondary);font-weight:600;">NEUTRAL</span>')
+                        .replace(/→\s*(MALICIOUS)/g, '→ <span style="color:var(--accent-red);font-weight:700;">MALICIOUS</span>')
+                        .replace(/→\s*(SUSPICIOUS)/g, '→ <span style="color:var(--accent-yellow);font-weight:700;">SUSPICIOUS</span>')
+                        .replace(/→\s*(CLEAN)/g, '→ <span style="color:var(--accent-green);font-weight:700;">CLEAN</span>');
+                    return `<div style="padding-left:1rem;">• ${styled}</div>`;
+                }
+                // Bold label lines like "VERDICT:" or "Final verdict:"
+                const boldLine = line.replace(/^([A-Z][A-Z\s]+:)/, '<strong>$1</strong>');
+                return `<div>${boldLine}</div>`;
+            }).join('');
         }
 
         // Get enrichment cell for a given IOC value and source
