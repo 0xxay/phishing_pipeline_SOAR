@@ -4,6 +4,7 @@ credentials.json
 client_secret_*.json
 cases.json
 block_list.json
+processed_ids.json
 escalation_log.jsonl
 false_positive_log.jsonl
 phishing_pipeline.log

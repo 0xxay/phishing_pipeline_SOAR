@@ -1,8 +1,8 @@
-"""Gmail poller to fetch emails with phishing label."""
+"""Gmail poller — scans all inbox emails and classifies every one."""
 import pickle
 import os
 import json
-from typing import List, Optional
+from typing import List, Set
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow, Flow
@@ -18,11 +18,11 @@ REDIRECT_URI = "http://localhost:8080/"
 
 
 class GmailPoller:
-    """Polls Gmail for emails with the phishing label."""
+    """Polls Gmail inbox and classifies every email — read, unread, labelled or not."""
 
     def __init__(self):
         self.service = None
-        self.label_id = None
+        self._processed_ids: Set[str] = self._load_processed_ids()
         self._authenticate()
 
     def _authenticate(self):
@@ -68,20 +68,28 @@ class GmailPoller:
         self.service = build("gmail", "v1", credentials=creds)
         log_info("Gmail authentication successful")
 
-    def _get_label_id(self, label_name: str) -> str:
-        """Get the ID of a label by name."""
-        if self.label_id:
-            return self.label_id
+    def _load_processed_ids(self) -> Set[str]:
+        """Load already-processed message IDs from disk."""
+        path = config.GMAIL_PROCESSED_IDS_FILE
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    return set(json.load(f))
+            except Exception:
+                return set()
+        return set()
 
-        results = self.service.users().labels().list(userId="me").execute()
-        labels = results.get("labels", [])
+    def _save_processed_ids(self):
+        """Persist processed IDs to disk."""
+        try:
+            with open(config.GMAIL_PROCESSED_IDS_FILE, "w") as f:
+                json.dump(list(self._processed_ids), f)
+        except Exception as e:
+            log_error(f"Failed to save processed IDs: {e}")
 
-        for label in labels:
-            if label["name"].lower() == label_name.lower():
-                self.label_id = label["id"]
-                return self.label_id
-
-        raise ValueError(f"Label '{label_name}' not found in Gmail")
+    def _mark_processed(self, message_id: str):
+        self._processed_ids.add(message_id)
+        self._save_processed_ids()
 
     def _decode_payload(self, message_id: str) -> tuple[str, List[dict]]:
         """Decode email payload and extract body and attachments."""
@@ -166,12 +174,10 @@ class GmailPoller:
         return header_dict
 
     def poll(self) -> List[Email]:
-        """Poll for unread emails with phishing label."""
+        """Scan all inbox emails — read and unread — classify each one that hasn't been seen before."""
         try:
-            label_id = self._get_label_id(config.GMAIL_LABEL)
-
-            # Query for unread messages with the phishing label
-            query = f"label:{config.GMAIL_LABEL} is:unread"
+            # Scan entire inbox, no label or read/unread filter
+            query = "in:inbox"
             results = (
                 self.service.users()
                 .messages()
@@ -180,32 +186,41 @@ class GmailPoller:
             )
 
             messages = results.get("messages", [])
-            emails = []
+            new_emails = []
+            skipped = 0
 
             for message in messages:
                 message_id = message["id"]
-                headers = self._extract_headers(message_id)
-                body, attachments = self._decode_payload(message_id)
 
-                email = Email(
-                    id=message_id,
-                    subject=headers.get("Subject", ""),
-                    sender=headers.get("From", ""),
-                    reply_to=headers.get("Reply-To"),
-                    body=body,
-                    headers=headers,
-                    attachments=attachments,
-                )
-                emails.append(email)
+                # Skip emails already processed
+                if message_id in self._processed_ids:
+                    skipped += 1
+                    continue
 
-                # Mark as read
-                self.service.users().messages().modify(
-                    userId="me",
-                    id=message_id,
-                    body={"removeLabelIds": ["UNREAD"]},
-                ).execute()
+                try:
+                    headers = self._extract_headers(message_id)
+                    body, attachments = self._decode_payload(message_id)
 
-            return emails
+                    email = Email(
+                        id=message_id,
+                        subject=headers.get("Subject", ""),
+                        sender=headers.get("From", ""),
+                        reply_to=headers.get("Reply-To"),
+                        body=body,
+                        headers=headers,
+                        attachments=attachments,
+                    )
+                    new_emails.append(email)
+                    self._mark_processed(message_id)
+
+                except Exception as e:
+                    log_error(f"Failed to fetch email {message_id}: {e}")
+                    self._mark_processed(message_id)  # skip broken emails too
+
+            if skipped:
+                log_info(f"Skipped {skipped} already-processed emails")
+            log_info(f"Found {len(new_emails)} new emails to classify")
+            return new_emails
 
         except Exception as e:
             log_error(f"Failed to poll Gmail: {str(e)}")

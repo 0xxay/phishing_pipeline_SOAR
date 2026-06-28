@@ -20,7 +20,9 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" or "openai"
 GMAIL_CREDENTIALS_PATH = os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json")
 GMAIL_TOKEN_PATH = os.getenv("GMAIL_TOKEN_PATH", "token.pickle")
 GMAIL_LABEL = os.getenv("GMAIL_LABEL", "phishing")
-GMAIL_MAX_RESULTS = int(os.getenv("GMAIL_MAX_RESULTS", "10"))
+GMAIL_MAX_RESULTS = int(os.getenv("GMAIL_MAX_RESULTS", "50"))
+GMAIL_PROCESSED_IDS_FILE = os.getenv("GMAIL_PROCESSED_IDS_FILE", "processed_ids.json")
+GMAIL_SCAN_ALL = os.getenv("GMAIL_SCAN_ALL", "true").lower() == "true"
 
 # Enrichment API Keys
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "")
